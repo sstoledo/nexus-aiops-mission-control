@@ -1,0 +1,4 @@
+# Local credentials for the academic simulation
+.env
+__pycache__/
+*.pyc

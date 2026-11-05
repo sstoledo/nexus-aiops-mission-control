@@ -1,0 +1,119 @@
+# AIOps Mission Control - alerting rules
+# Team: Sentinel Ops | Platform: NEXUS E-COMMERCE
+#
+# Mandatory rules required by Fase 4 of the project brief:
+#   1. NexusHighCpuUsage   - CPU > 90% for 2 minutes            (severity: high)
+#   2. NexusCriticalMemory - available memory < 10% for 2 minutes (severity: high)
+#   3. NexusTargetDown     - up == 0 for 1 minute                 (severity: critical)
+
+groups:
+  - name: nexus-aiops-required
+    interval: 15s
+    rules:
+      - alert: NexusHighCpuUsage
+        expr: 100 - (avg by (instance_name) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 90
+        for: 2m
+        labels:
+          severity: high
+          category: capacity
+          component: host
+        annotations:
+          summary: "Consumo elevado de CPU en {{ $labels.instance_name }}"
+          description: >-
+            El uso de CPU se mantiene por encima del 90% durante mas de 2 minutos
+            (valor actual: {{ printf "%.1f" $value }}%). Impacto potencial en la
+            latencia del checkout de NEXUS E-COMMERCE.
+          runbook: "https://github.com/sentinel-ops/nexus-aiops#cpu"
+
+      - alert: NexusCriticalMemory
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 < 10
+        for: 2m
+        labels:
+          severity: high
+          category: capacity
+          component: host
+        annotations:
+          summary: "Memoria disponible critica en {{ $labels.instance_name }}"
+          description: >-
+            La memoria disponible cae por debajo del 10% del total durante mas de
+            2 minutos (valor actual: {{ printf "%.1f" $value }}%). Riesgo de OOM
+            killer sobre los contenedores del stack.
+          runbook: "https://github.com/sentinel-ops/nexus-aiops#memoria"
+
+      - alert: NexusTargetDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: availability
+        annotations:
+          summary: "Objetivo no disponible: {{ $labels.job }}"
+          description: >-
+            Prometheus no puede recolectar metricas del objetivo
+            {{ $labels.instance }} (job {{ $labels.job }}) desde hace mas de
+            1 minuto. El servicio se considera caido o inaccesible.
+          runbook: "https://github.com/sentinel-ops/nexus-aiops#disponibilidad"
+
+  # Optional application-level rules. They are not required by the brief; they
+  # demonstrate the value of the simulated exporter and can be deleted without
+  # affecting the three mandatory rules above.
+  - name: nexus-aiops-application
+    interval: 30s
+    rules:
+      - alert: NexusHighErrorRate
+        expr: sum(rate(nexus_app_http_500_total[5m])) * 60 > 5
+        for: 2m
+        labels:
+          severity: high
+          category: reliability
+          component: application
+        annotations:
+          summary: "Tasa elevada de errores HTTP 500 en NEXUS E-COMMERCE"
+          description: >-
+            La aplicacion devuelve mas de 5 errores HTTP 500 por minuto durante
+            2 minutos (valor actual: {{ printf "%.1f" $value }} errores/min).
+          runbook: "https://github.com/sentinel-ops/nexus-aiops#errores"
+
+      - alert: NexusSlowResponse
+        expr: histogram_quantile(0.95, sum by (le) (rate(nexus_app_response_time_seconds_bucket[5m]))) > 1.5
+        for: 2m
+        labels:
+          severity: high
+          category: performance
+          component: application
+        annotations:
+          summary: "Latencia p95 degradada en NEXUS E-COMMERCE"
+          description: >-
+            El percentil 95 del tiempo de respuesta supera 1.5 segundos
+            (valor actual: {{ printf "%.2f" $value }}s).
+          runbook: "https://github.com/sentinel-ops/nexus-aiops#latencia"
+
+      - alert: NexusDatabaseUnavailable
+        expr: nexus_db_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: database
+          component: database
+        annotations:
+          summary: "Base de datos de NEXUS E-COMMERCE inaccesible"
+          description: >-
+            La aplicacion no puede alcanzar PostgreSQL (nexus_db_up == 0) desde
+            hace mas de 1 minuto. Los endpoints /api responden con error.
+          runbook: "https://github.com/sentinel-ops/nexus-aiops#base-de-datos"
+
+      - alert: NexusHighDatabaseConnections
+        # Instantaneous sampling misses connection-pool spikes that last
+        # milliseconds, so the rule reads the peak over a window instead.
+        expr: max_over_time(nexus_db_active_connections[5m]) >= 3
+        for: 2m
+        labels:
+          severity: high
+          category: database
+          component: database
+        annotations:
+          summary: "Presion sobre el pool de conexiones de la base de datos"
+          description: >-
+            El pool de la aplicacion alcanzo {{ printf "%.0f" $value }} conexiones
+            simultaneas en los ultimos 5 minutos, acercandose al limite maximo de 5.
+          runbook: "https://github.com/sentinel-ops/nexus-aiops#base-de-datos"

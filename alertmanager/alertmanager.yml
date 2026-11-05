@@ -1,0 +1,75 @@
+# AIOps Mission Control - Alertmanager configuration
+# Team: Sentinel Ops | Platform: NEXUS E-COMMERCE
+#
+# Severity routing required by Fase 4:
+#   critical -> notificacion inmediata y recordatorio cada 30 minutos
+#   high     -> notificacion agrupada y recordatorio cada hora
+#
+# The receiver is the simulated NEXUS application itself (/alerts). That keeps
+# the demo fully self-contained: no external SMTP or Slack account is needed and
+# the delivery of every alert is visible in the container logs plus the
+# nexus_alerts_received_total metric inside Grafana.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: nexus-alert-sink
+  group_by: ["alertname", "severity", "job"]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+
+  routes:
+    - matchers:
+        - severity = "critical"
+      receiver: nexus-alert-sink
+      group_wait: 5s
+      group_interval: 30s
+      repeat_interval: 30m
+
+    - matchers:
+        - severity = "high"
+      receiver: nexus-alert-sink
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 1h
+
+receivers:
+  - name: nexus-alert-sink
+    webhook_configs:
+      - url: "http://app:8000/alerts"
+        send_resolved: true
+        max_alerts: 0
+
+# A critical availability alert already explains every downstream symptom for
+# the same target, so capacity alerts on that target are suppressed while the
+# target is down. NexusTargetDown is excluded from the target set explicitly:
+# it is critical too, and without the negative matcher the rule could suppress
+# the very alert that justifies the inhibition.
+inhibit_rules:
+  - source_matchers:
+      - alertname = "NexusTargetDown"
+    target_matchers:
+      - severity =~ "high|critical"
+      - alertname != "NexusTargetDown"
+    equal: ["job", "instance"]
+
+# ---------------------------------------------------------------------------
+# Optional: real email delivery (uncomment and fill in to use Gmail)
+# ---------------------------------------------------------------------------
+# global:
+#   smtp_smarthost: "smtp.gmail.com:587"
+#   smtp_from: "sentinel.ops.nexus@gmail.com"
+#   smtp_auth_username: "sentinel.ops.nexus@gmail.com"
+#   smtp_auth_password: "<app-password>"
+#   smtp_require_tls: true
+#
+# receivers:
+#   - name: nexus-alert-sink
+#     webhook_configs:
+#       - url: "http://app:8000/alerts"
+#         send_resolved: true
+#     email_configs:
+#       - to: "sentinel.ops.nexus@gmail.com"
+#         send_resolved: true

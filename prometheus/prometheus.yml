@@ -1,0 +1,52 @@
+# AIOps Mission Control - Prometheus configuration
+# Team: Sentinel Ops | Platform: NEXUS E-COMMERCE
+#
+# Targets scraped:
+#   prometheus   -> self monitoring (9090)
+#   node         -> Node Exporter, host CPU/memory/disk/network (9100)
+#   nexus-app    -> simulated application: latency, HTTP 500, DB connections (8000)
+#   nexus-db     -> PostgreSQL exporter-free liveness via the app (no separate exporter)
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    platform: nexus-ecommerce
+    team: sentinel-ops
+    environment: local-docker
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+rule_files:
+  - /etc/prometheus/rules.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # --- Componente REAL: metricas del sistema base -------------------------
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          instance_name: nexus-host
+
+  # --- Componentes SIMULADOS: app + base de datos -------------------------
+  - job_name: nexus-app
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["app:8000"]
+        labels:
+          service: nexus-app
+          tier: application
+
+  # The PostgreSQL dependency is monitored through the application exporter
+  # (nexus_db_up, nexus_db_active_connections). It is intentionally NOT a second
+  # scrape job: scraping the same endpoint twice would duplicate every
+  # application series and double every aggregated rate.

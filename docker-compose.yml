@@ -1,0 +1,191 @@
+# AIOps Mission Control - NEXUS E-COMMERCE
+# Team: Sentinel Ops | Curso: Gerencia de Tecnologias de Informacion (Ciclo IX)
+#
+# Stack local reproducible en Windows con Docker Desktop + Docker Compose.
+# Levanta: PostgreSQL, aplicacion simulada, Node Exporter, Prometheus,
+# Alertmanager y Grafana dentro de una red aislada.
+#
+#   docker compose up -d --build
+#
+# Interfaces:
+#   Grafana       http://localhost:3000
+#   Prometheus    http://localhost:9090
+#   Alertmanager  http://localhost:9093
+#   Node Exporter http://localhost:9100
+#   App NEXUS     http://localhost:8080
+
+name: nexus-aiops
+
+services:
+  # ---------------------------------------------------------------------------
+  # Componente SIMULADO: base de datos de NEXUS E-COMMERCE
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: nexus-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nexus}
+      POSTGRES_USER: ${POSTGRES_USER:-nexus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexus_local_2026}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexus} -d ${POSTGRES_DB:-nexus}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [nexus-net]
+
+  # ---------------------------------------------------------------------------
+  # Componente SIMULADO: aplicacion de comercio + exporter propio
+  # ---------------------------------------------------------------------------
+  app:
+    build:
+      context: ./app
+    container_name: nexus-app
+    restart: unless-stopped
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-nexus}
+      DB_USER: ${POSTGRES_USER:-nexus}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-nexus_local_2026}
+      DB_POLL_SECONDS: "5"
+    ports:
+      - "8080:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request,sys;
+          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status == 200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [nexus-net]
+
+  # ---------------------------------------------------------------------------
+  # Componente REAL: metricas del sistema base (CPU, memoria, disco, red)
+  # ---------------------------------------------------------------------------
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: nexus-node-exporter
+    restart: unless-stopped
+    command:
+      - "--path.rootfs=/host"
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/)"
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    ports:
+      - "9100:9100"
+    networks: [nexus-net]
+
+  # ---------------------------------------------------------------------------
+  # Recoleccion, almacenamiento y evaluacion de reglas
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: nexus-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - alertmanager
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [nexus-net]
+
+  # ---------------------------------------------------------------------------
+  # Gestion de severidades y enrutamiento de notificaciones
+  # ---------------------------------------------------------------------------
+  alertmanager:
+    image: prom/alertmanager:v0.28.0
+    container_name: nexus-alertmanager
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      - "--web.external-url=http://localhost:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    ports:
+      - "9093:9093"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9093/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [nexus-net]
+
+  # ---------------------------------------------------------------------------
+  # Visualizacion con dashboards provisionados automaticamente
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: nexus-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-sentinel2026}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/nexus-aiops-overview.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [nexus-net]
+
+  # ---------------------------------------------------------------------------
+  # Generador de carga de CPU para demostrar las reglas de Fase 4.
+  # Solo arranca con: docker compose --profile chaos up -d chaos-cpu
+  # ---------------------------------------------------------------------------
+  chaos-cpu:
+    image: polinux/stress
+    container_name: nexus-chaos-cpu
+    profiles: ["chaos"]
+    command: ["stress", "--cpu", "8", "--timeout", "300s"]
+    networks: [nexus-net]
+
+volumes:
+  postgres-data:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:
+
+networks:
+  nexus-net:
+    driver: bridge
