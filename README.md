@@ -8,6 +8,10 @@ Todo corre en contenedores Docker sobre Windows, sin máquina virtual Linux
 tradicional: el mismo `docker-compose.yml` produce un entorno idéntico en la
 máquina de cada integrante.
 
+> **Guía de operación:** [`docs/GUIA-OPERACION.md`](docs/GUIA-OPERACION.md) — qué hace
+> cada componente, cómo se relacionan, a dónde entrar y cómo disparar cada alerta
+> a demanda para demostrarla.
+
 ---
 
 ## 1. Arquitectura del stack
